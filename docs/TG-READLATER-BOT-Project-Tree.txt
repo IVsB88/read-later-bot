@@ -1,0 +1,73 @@
+TG-READLATER-BOT/
+├── .pytest_cache/
+├── alembic/
+│   ├── __pycache__/
+│   ├── versions/
+│   ├── env.py
+│   ├── README
+│   └── script.py.mako
+├── config/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   ├── config.py
+│   └── timezones_config.py
+├── database/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   └── db_handler.py
+├── docs/
+├── Include/
+├── Lib/
+│   └── site-packages/
+│       ├── pip/
+│       └── pip-24.0.dist-info/
+├── models_dir/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   └── models.py
+├── Scripts/
+│   ├── python.exe
+│   └── pythonw.exe
+├── src/
+│   ├── __pycache__/
+│   └── bot.py
+├── ssl/
+├── tests/
+│   ├── __pycache__/
+│   ├── conftest.py
+│   ├── test_db_handler.py
+│   ├── test_link_operations.py
+│   ├── test_reminder_operations.py
+│   ├── test_url_extractor.py
+│   └── verification_script.py
+│   └── test_rate_limiter.py
+├── utils/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   └── url_extractor.py
+│   └── rate_limiter.py
+│   └── logging_config.py
+├── vencd/
+│   ├── Include/
+│   ├── Lib/
+│   ├── Scripts/
+│   └── pyenv.cfg
+├── venv/
+│   ├── Include/
+│   ├── Lib/
+│   ├── Scripts/
+│   └── pyenv.cfg
+├── .env                     # Development environment (gitignored)
+├── .env.example            # Template file (committed to git)
+├── .env.test               # Testing environment (committed to git)
+├── .env.prod.example       # Production template (committed to git)
+├── .gitignore
+├── alembic.ini
+├── init_db.py
+├── pytest.ini
+├── pyenv.cfg
+├── requirements.txt
+├── reset_db.py
+├── test.db
+└── verification_script.py
+└── verify_config.py
