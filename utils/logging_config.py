@@ -3,8 +3,9 @@ import logging
 import logging.handlers
 import re
 from typing import Dict, Any
-from config.config import config
+from config.config import Config
 
+config = Config.get_instance()
 class SensitiveDataFilter(logging.Filter):
     """Enhanced filter that masks sensitive data in log records"""
     

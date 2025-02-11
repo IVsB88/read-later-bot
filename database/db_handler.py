@@ -4,9 +4,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from models_dir.models import Base, User, Link, Reminder, UserAnalytics  # Added UserAnalytics
-from config.config import config
+from config.config import Config
 
 logger = logging.getLogger(__name__)
+config = Config.get_instance()
 
 class DatabaseHandler:
     _instance = None

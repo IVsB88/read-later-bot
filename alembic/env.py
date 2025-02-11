@@ -14,7 +14,6 @@ from models_dir.models import Base
 
 # Create your application config instance
 app_config = Config()  # Renamed to avoid confusion
-app_config.validate_config()
 
 # Get Alembic config object
 alembic_cfg = context.config
