@@ -26,6 +26,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
 # Logs
 logs/
@@ -34,6 +35,9 @@ logs/
 # Database
 *.sqlite3
 *.db
+db_backups/
+*.dump
+*.sql
 
 # IDE
 .idea/

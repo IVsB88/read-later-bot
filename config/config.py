@@ -29,6 +29,10 @@ class Config:
         
     def _load_environment(self):
         """Load appropriate .env file based on environment"""
+        # Basic logging setup for config only
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
+        
         self.logger.info("Starting environment loading...")
         
         # Check if we're in test mode

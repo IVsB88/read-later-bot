@@ -1,5 +1,7 @@
-from config.config import config
+from config.config import Config
 import os
+
+config = Config.get_instance()
 
 def verify_config():
     """Verify configuration loading and settings"""

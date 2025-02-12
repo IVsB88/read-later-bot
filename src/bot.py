@@ -16,7 +16,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Local imports
-from config.config import config
+from config.config import Config
 from config.timezones_config import REGION_TIMEZONES
 from database.db_handler import DatabaseHandler
 from models_dir.models import Link, Reminder, User, UserAnalytics
@@ -24,6 +24,7 @@ from utils.url_extractor import extract_urls
 from utils.logging_config import setup_logging
 from utils.rate_limiter import RateLimiter
 
+config = Config.get_instance()
 rate_limiter = RateLimiter()
 # Set up logging - this is now our only logging configuration
 setup_logging()
