@@ -40,14 +40,6 @@ class DatabaseHandler:
                 pool_settings.update({
                     'connect_args': {
                         'connect_timeout': 10,
-                        'sslmode': 'verify-full'
-                    }
-                })
-            else:
-                # Development settings
-                pool_settings.update({
-                    'connect_args': {
-                        'connect_timeout': 10,
                     }
                 })
 
