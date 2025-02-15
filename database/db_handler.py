@@ -7,7 +7,6 @@ from models_dir.models import Base, User, Link, Reminder, UserAnalytics  # Added
 from config.config import Config
 
 logger = logging.getLogger(__name__)
-config = Config.get_instance()
 
 class DatabaseHandler:
     _instance = None
@@ -25,6 +24,9 @@ class DatabaseHandler:
     
     def init_db(self):
         try:
+            # Get config instance when needed
+            config = Config.get_instance()
+            
             # Enhanced pool settings
             pool_settings = {
                 'poolclass': QueuePool,
@@ -39,7 +41,7 @@ class DatabaseHandler:
             if config.ENVIRONMENT == 'production':
                 pool_settings.update({
                     'connect_args': {
-                        'connect_timeout': 10,
+                        'connect_timeout': config.DB_CONNECTION_TIMEOUT,
                     }
                 })
 
@@ -105,47 +107,11 @@ class DatabaseHandler:
                     content_type=content_type
                 )
                 session.add(link)
-                
-                # Create default reminder for tomorrow at 9 AM
-                tomorrow_9am = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
-                reminder = Reminder(
-                    link=link,
-                    remind_at=tomorrow_9am,
-                    is_default_time=True
-                )
-                session.add(reminder)
-                
-                # Get IDs before closing session
-                link_id = link.id
-                reminder_id = reminder.id
-                
-                return link_id, reminder_id
+                return link
                 
             except Exception as e:
                 logger.error(f"Error saving link: {str(e)}")
                 raise
-
-    def schedule_reminder(self, user_id, link_id, delta):
-        """Schedule a reminder with secure session handling"""
-        with self.session_scope() as session:
-            try:
-                link = session.query(Link).filter_by(id=link_id, user_id=user_id).first()
-                if not link:
-                    raise ValueError("Link not found or does not belong to the user")
-
-                remind_at = datetime.now() + delta
-                reminder = Reminder(
-                    link_id=link.id,
-                    remind_at=remind_at,
-                    is_default_time=False
-                )
-                session.add(reminder)
-                return reminder
-                
-            except Exception as e:
-                logger.error(f"Error scheduling reminder: {str(e)}")
-                raise
-
 
     def update_user_analytics(self, user_id, action_type, session=None):
         """Update user analytics with proper error handling"""
@@ -187,3 +153,9 @@ class DatabaseHandler:
         finally:
             if session and session_created_here:
                 session.close()
+
+    @classmethod
+    def reset(cls):
+        """Reset the singleton instance (useful for testing)"""
+        cls._instance = None
+        cls._initialized = False

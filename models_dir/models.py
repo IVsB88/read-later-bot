@@ -28,7 +28,7 @@ class Link(Base):
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    url = Column(String(2083), nullable=False)  # Maximum URL length supported by browsers
+    url = Column(String(2083), nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     is_read = Column(Boolean, default=False)
 
@@ -40,9 +40,9 @@ class Link(Base):
     __table_args__ = (
         # Check URL length
         CheckConstraint('LENGTH(url) <= 2083', name='check_url_length'),
-        # Check URL starts with http:// or https://
+        # Check URL starts with http:// or https:// using SQLite compatible REGEXP
         CheckConstraint(
-            "url SIMILAR TO 'https?://%'",
+            "url LIKE 'http://%' OR url LIKE 'https://%'",
             name='check_url_format'
         ),
         # Add index for user's links queries

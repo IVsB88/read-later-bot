@@ -3,9 +3,46 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from models_dir.models import User, Link, Reminder
 from database.db_handler import DatabaseHandler
+from config.config import Config, Environment
 
-def create_test_user(db_session, telegram_id=123456, timezone=None):
+@pytest.fixture(autouse=True)
+def setup_test_environment(monkeypatch):
+    """Set up test environment variables before each test"""
+    # Reset Config singleton
+    if hasattr(Config, '_instance'):
+        Config._instance = None
+    
+    # Reset DatabaseHandler singleton
+    DatabaseHandler.reset()
+    
+    # Set test environment variables
+    monkeypatch.setenv('ENVIRONMENT', 'testing')
+    monkeypatch.setenv('DEBUG', 'True')
+    monkeypatch.setenv('TELEGRAM_TOKEN', 'test_token')
+    monkeypatch.setenv('DATABASE_URL', 'sqlite:///test.db')
+    monkeypatch.setenv('HASH_SALT', 'test_salt_1234567890abcdef')
+    monkeypatch.setenv('ENCRYPTION_KEY', 'test_key_1234567890abcdef1234567890abcdef')
+    monkeypatch.setenv('DB_POOL_SIZE', '1')
+    monkeypatch.setenv('DB_MAX_OVERFLOW', '0')
+    
+    yield
+
+@pytest.fixture
+def db_session():
+    """Provides a database session for tests"""
+    db = DatabaseHandler()
+    session = db.get_session()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+def create_test_user(db_session, telegram_id=None, timezone=None):
     """Helper function to create a test user"""
+    if telegram_id is None:
+        telegram_id = int(datetime.now().timestamp() * 1000)
+    
     user = User(
         telegram_id=telegram_id,
         username="test_user",
@@ -48,7 +85,7 @@ def test_basic_reminder_creation(db_session):
     saved_reminder = db_session.query(Reminder).filter_by(link_id=link.id).first()
     assert saved_reminder is not None
     assert saved_reminder.is_default_time is True
-    assert saved_reminder.remind_at.hour == 9
+    assert saved_reminder.remind_at.replace(tzinfo=timezone.utc).hour == 9
     assert saved_reminder.status == 'pending'
 
 def test_custom_reminder_time(db_session):
@@ -75,7 +112,7 @@ def test_custom_reminder_time(db_session):
     saved_reminder = db_session.query(Reminder).filter_by(link_id=link.id).first()
     assert saved_reminder is not None
     assert saved_reminder.is_default_time is False
-    assert saved_reminder.remind_at == utc_reminder_time.replace(tzinfo=None)
+    assert saved_reminder.remind_at.replace(tzinfo=timezone.utc) == utc_reminder_time.replace(tzinfo=timezone.utc)
 
 def test_reminder_snooze(db_session):
     """Test snoozing a reminder"""
@@ -102,37 +139,48 @@ def test_reminder_snooze(db_session):
     # Assert
     assert reminder.snooze_count == 1
     assert reminder.is_snoozed is True
-    assert reminder.remind_at.hour == 9
+    assert reminder.remind_at.replace(tzinfo=timezone.utc).hour == 9
 
 def test_get_due_reminders(db_session):
     """Test fetching due reminders"""
-    # Arrange
-    user = create_test_user(db_session)
-    link = create_test_link(db_session, user)
-    now = datetime.now(timezone.utc)
-    
-    # Create an overdue reminder
-    reminder = Reminder(
-        link_id=link.id,
-        remind_at=now - timedelta(minutes=5),
-        status='pending'
-    )
-    db_session.add(reminder)
-    db_session.commit()
-    
-    # Act
-    due_reminders = (
-        db_session.query(Reminder)
-        .filter(
-            Reminder.status == 'pending',
-            Reminder.remind_at <= now
+    try:
+        # Clean up existing reminders first
+        db_session.query(Reminder).delete()
+        db_session.commit()
+        
+        # Arrange
+        user = create_test_user(db_session)
+        link = create_test_link(db_session, user)
+        now = datetime.now(timezone.utc)
+        
+        # Create an overdue reminder
+        reminder = Reminder(
+            link_id=link.id,
+            remind_at=now - timedelta(minutes=5),
+            status='pending'
         )
-        .all()
-    )
-    
-    # Assert
-    assert len(due_reminders) == 1
-    assert due_reminders[0].id == reminder.id
+        db_session.add(reminder)
+        db_session.commit()
+        
+        # Act - Use a more specific query
+        due_reminders = (
+            db_session.query(Reminder)
+            .filter(
+                Reminder.status == 'pending',
+                Reminder.remind_at <= now,
+                Reminder.link_id == link.id  # Make sure we only get reminders for our test link
+            )
+            .all()
+        )
+        
+        # Assert
+        assert len(due_reminders) == 1
+        assert due_reminders[0].id == reminder.id
+        
+    finally:
+        # Clean up after test
+        db_session.query(Reminder).filter(Reminder.link_id == link.id).delete()
+        db_session.commit()
 
 def test_reminder_status_updates(db_session):
     """Test updating reminder status"""
@@ -183,7 +231,7 @@ def test_user_selecting_reminder_time(db_session):
     saved_reminder = db_session.query(Reminder).filter_by(link_id=link.id).first()
     assert saved_reminder is not None
     assert saved_reminder.is_default_time is False
-    assert saved_reminder.remind_at == utc_reminder_time.replace(tzinfo=None)
+    assert saved_reminder.remind_at.replace(tzinfo=timezone.utc) == utc_reminder_time.replace(tzinfo=timezone.utc)
 
 def test_user_skipping_reminder_with_timezone(db_session):
     """Test when user skips reminder setting with timezone set"""
@@ -209,7 +257,7 @@ def test_user_skipping_reminder_with_timezone(db_session):
     saved_reminder = db_session.query(Reminder).filter_by(link_id=link.id).first()
     assert saved_reminder is not None
     assert saved_reminder.is_default_time is True
-    assert saved_reminder.remind_at == utc_reminder_time.replace(tzinfo=None)
+    assert saved_reminder.remind_at.replace(tzinfo=timezone.utc) == utc_reminder_time.replace(tzinfo=timezone.utc)
 
 def test_user_skipping_reminder_without_timezone(db_session):
     """Test when user skips reminder setting without timezone set"""
@@ -233,4 +281,4 @@ def test_user_skipping_reminder_without_timezone(db_session):
     saved_reminder = db_session.query(Reminder).filter_by(link_id=link.id).first()
     assert saved_reminder is not None
     assert saved_reminder.is_default_time is True
-    assert saved_reminder.remind_at.hour == 9  # Should be 9 AM UTC
+    assert saved_reminder.remind_at.replace(tzinfo=timezone.utc).hour == 9  # Should be 9 AM UTC
