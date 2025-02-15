@@ -1,59 +1,74 @@
 # utils/logging_config.py
 import logging
-import logging.handlers
+import os
+from pathlib import Path
 import re
-from typing import Dict, Any
-from config.config import Config
+from config.config import Config, Environment
 
-config = Config.get_instance()
 class SensitiveDataFilter(logging.Filter):
-    """Enhanced filter that masks sensitive data in log records"""
-    
+    """Filter that masks sensitive data in log records"""
     def __init__(self):
         super().__init__()
         self.patterns = [
-            # Bot token pattern
-            (r'bot[0-9]+:[A-Za-z0-9_-]{30,}', '[MASKED_BOT_TOKEN]'),
-            # Database URLs
-            (r'postgresql://[^@]+@[^/\s]+', '[MASKED_DB_URL]'),
-            # API URLs
-            (r'https://api\.telegram\.org/bot[^/]+', '[MASKED_API_URL]'),
+            (r'bot[0-9]+:[A-Za-z0-9-_]{35,}', 'BOT_TOKEN_MASKED'),
+            (r'bot[0-9]+:[A-Za-z0-9-_]+', 'BOT_TOKEN_MASKED'),  # Shorter pattern for test tokens
+            (r'https://api\.telegram\.org/bot[0-9]+:[A-Za-z0-9-_]+', 
+            'https://api.telegram.org/bot[MASKED]'),
+            (r'https://api\.telegram\.org/BOT_TOKEN_MASKED', 
+            'https://api.telegram.org/bot[MASKED]'),
+            (r'DATABASE_URL=[^\s]+', 'DATABASE_URL_MASKED'),
         ]
     
-    def filter(self, record: logging.LogRecord) -> bool:
-        if hasattr(record, 'msg'):
+    def filter(self, record):
+        try:
+            # Handle the case where msg is a string
             if isinstance(record.msg, str):
-                msg = record.msg
                 for pattern, mask in self.patterns:
-                    msg = re.sub(pattern, mask, msg)
-                record.msg = msg
-            elif isinstance(record.msg, dict):
-                record.msg = self.mask_dict(record.msg)
+                    record.msg = re.sub(pattern, mask, record.msg)
+            
+            # Handle the case where there are arguments
+            if record.args:
+                # Convert args to list if it's a tuple
+                args = list(record.args)
+                modified = False
                 
-        if record.args:
-            args = list(record.args)
-            for i, arg in enumerate(args):
-                if isinstance(arg, str):
+                # Process each argument
+                for i, arg in enumerate(args):
+                    if isinstance(arg, str):
+                        for pattern, mask in self.patterns:
+                            new_arg = re.sub(pattern, mask, arg)
+                            if new_arg != arg:
+                                args[i] = new_arg
+                                modified = True
+                
+                # Only update args if we made changes
+                if modified:
+                    record.args = tuple(args)
+            
+            # Handle the case where msg might be formatted with args
+            if record.args:
+                try:
+                    # Try to create the formatted message
+                    formatted_msg = record.msg % record.args
+                    # Apply patterns to the formatted message
                     for pattern, mask in self.patterns:
-                        args[i] = re.sub(pattern, mask, arg)
-            record.args = tuple(args)
-        return True
+                        formatted_msg = re.sub(pattern, mask, formatted_msg)
+                    # Update the record
+                    record.msg = formatted_msg
+                    record.args = ()
+                except (TypeError, ValueError):
+                    # If formatting fails, just continue with original message
+                    pass
+            
+        except Exception as e:
+            # Log the error but don't block the message
+            print(f"Error in SensitiveDataFilter: {e}")
         
-    def mask_dict(self, d: Dict[str, Any]) -> Dict[str, Any]:
-        masked = d.copy()
-        for k, v in masked.items():
-            masked[k] = self.mask_value(v)
-        return masked
-    
-    def mask_value(self, value: Any) -> Any:
-        if isinstance(value, str):
-            for pattern, mask in self.patterns:
-                value = re.sub(pattern, mask, value)
-        return value
+        return True
 
 def setup_logging():
     """Configure logging with appropriate levels for different components"""
-    from config.config import Config
+    # Get config instance
     config = Config.get_instance()
     
     # Clear any existing handlers
@@ -71,39 +86,69 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     
-    # Add handler to root logger
+    # Determine log directory based on environment
+    if config.ENVIRONMENT == Environment.PRODUCTION:
+        log_dir = Path('/var/log/tg-readlater-bot')
+    else:
+        log_dir = Path('logs')
+    
+    # Create log directory if it doesn't exist
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        print(f"Warning: Cannot create log directory in {log_dir}. Using current directory.")
+        log_dir = Path('logs')
+        log_dir.mkdir(exist_ok=True)
+    
+    # Configure file handlers
+    handlers = []
+    try:
+        # Bot log handler
+        bot_log_path = log_dir / 'bot.log'
+        bot_file_handler = logging.FileHandler(str(bot_log_path), mode='w')  # Use 'w' mode to start fresh
+        bot_file_handler.setFormatter(formatter)
+        handlers.append(bot_file_handler)
+        
+        # Error log handler
+        error_log_path = log_dir / 'error.log'
+        error_file_handler = logging.FileHandler(str(error_log_path), mode='w')  # Use 'w' mode to start fresh
+        error_file_handler.setFormatter(formatter)
+        error_file_handler.setLevel(logging.ERROR)
+        handlers.append(error_file_handler)
+        
+    except PermissionError as e:
+        print(f"Warning: Cannot create log files: {e}")
+        # Continue with console logging only
+        handlers = []
+    
+    # Create and add filter
+    sensitive_filter = SensitiveDataFilter()
+    
+    # Set up root logger
+    root_logger.setLevel(logging.INFO if not config.DEBUG else logging.DEBUG)
+    
+    # Add filter to root logger
+    root_logger.addFilter(sensitive_filter)
+    
+    # Add handlers and filters
+    for handler in handlers:
+        handler.addFilter(sensitive_filter)
+        root_logger.addHandler(handler)
+    
+    # Add console handler last
+    console_handler.addFilter(sensitive_filter)
     root_logger.addHandler(console_handler)
     
-    # Add sensitive data filter to root logger AND console handler
-    sensitive_filter = SensitiveDataFilter()
-    root_logger.addFilter(sensitive_filter)
-    console_handler.addFilter(sensitive_filter)  # Add filter to handler too
-    
-    # Set log levels after adding filters
+    # Set specific component log levels
     if config.DEBUG:
-        root_logger.setLevel(logging.INFO)
         logging.getLogger('__main__').setLevel(logging.DEBUG)
         logging.getLogger('bot').setLevel(logging.DEBUG)
         logging.getLogger('httpx').setLevel(logging.WARNING)
         logging.getLogger('telegram').setLevel(logging.INFO)
         logging.getLogger('apscheduler').setLevel(logging.INFO)
     else:
-        root_logger.setLevel(logging.INFO)
         for logger_name in ['httpx', 'telegram', 'apscheduler']:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
-
-def log_action(action: str, details: dict = None, logger_name: str = None):
-    """Enhanced logging function that respects debug mode"""
-    logger_to_use = logging.getLogger(logger_name) if logger_name else logging.getLogger(__name__)
     
-    if config.DEBUG:
-        log_msg = f"Action: {action}"
-        if details:
-            # Format details for better readability
-            details_str = "\n".join(f"  {k}: {v}" for k, v in details.items())
-            log_msg += f"\nDetails:\n{details_str}"
-        logger_to_use.debug(log_msg)
-    else:
-        logger_to_use.info(f"Action: {action}")
-        if details and 'error' in details:
-            logger_to_use.error(f"Error in {action}: {details['error']}")
+    # Log startup message
+    logging.info(f"Logging setup completed. Environment: {config.ENVIRONMENT}, Using log directory: {log_dir}")
