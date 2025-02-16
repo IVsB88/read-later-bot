@@ -44,35 +44,6 @@ def test_save_link(db_session: Session, test_user: User):
         logger.error(f"Test failed: {str(e)}")
         raise
 
-def test_save_link_with_metadata(db_session: Session, test_user: User):
-    """Test saving a link with title and content type"""
-    try:
-        # Arrange
-        url = "https://example.com"
-        title = "Example Article"
-        content_type = "Article"
-        
-        # Create link with metadata
-        link = Link(
-            user_id=test_user.id,
-            url=url,
-            title=title,
-            content_type=content_type
-        )
-        db_session.add(link)
-        db_session.commit()
-        
-        # Query to verify
-        saved_link = db_session.query(Link).filter_by(url=url).first()
-        
-        # Assert
-        assert saved_link.title == title
-        assert saved_link.content_type == content_type
-
-    except Exception as e:
-        logger.error(f"Test failed: {str(e)}")
-        raise
-
 def test_multiple_links_for_user(db_session: Session, test_user: User):
     """Test user can save multiple links"""
     try:

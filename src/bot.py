@@ -457,7 +457,7 @@ async def send_due_reminders(bot, db_handler):
                     reminder.last_reminded_at = current_utc
                     logger.info(f"Sent reminder {reminder.id} to user {reminder.link.user.telegram_id}")
                     reminder.status = 'sent'
-                    db.update_user_analytics(reminder.link.user.id, 'reminder_completed', session=session)
+                    db_handler.update_user_analytics(reminder.link.user.id, 'reminder_completed', session=session)
                     
                 except Exception as e:
                     logger.error(f"Failed to send reminder {reminder.id}: {str(e)}")
