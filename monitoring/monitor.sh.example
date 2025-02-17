@@ -1,0 +1,30 @@
+#!/bin/bash
+# Example monitoring configuration
+# Copy this file to Scripts/monitor.sh and update with your values
+
+# Configuration
+ADMIN_BOT_TOKEN="your_admin_bot_token_here"
+ADMIN_CHAT_ID="your_chat_id_here"
+
+# Check if bot is running
+if ! systemctl is-active --quiet tg-readlater-bot; then
+    curl -s "https://api.telegram.org/bot${ADMIN_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${ADMIN_CHAT_ID}" \
+        -d "text=⚠️ Bot is down!"
+fi
+
+# Check disk space
+DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+if [ "$DISK_USAGE" -gt 90 ]; then
+    curl -s "https://api.telegram.org/bot${ADMIN_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${ADMIN_CHAT_ID}" \
+        -d "text=⚠️ Disk usage above 90%: $DISK_USAGE%"
+fi
+
+# Check memory
+FREE_MEM=$(free -m | awk 'NR==2 {print $4}')
+if [ "$FREE_MEM" -lt 100 ]; then
+    curl -s "https://api.telegram.org/bot${ADMIN_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${ADMIN_CHAT_ID}" \
+        -d "text=⚠️ Low memory: ${FREE_MEM}MB free"
+fi
