@@ -77,15 +77,65 @@ async def start(update, context):
         if session:
             session.close()
 
+async def privacy_command(update, context):
+    """Display privacy policy information"""
+    privacy_text = """
+📋 Privacy Policy for Read Complete Bot
+
+Information We Collect:
+- Telegram user ID and username
+- Links you share with the bot
+- Your timezone (if you provide it)
+- Usage statistics (links saved, reminders set, snooze patterns)
+
+How We Use This Information:
+- To save your links and send reminders
+- To improve the bot's functionality
+- To provide personalized timing for reminders
+
+Data Retention:
+- We store your data until you request deletion
+- You can delete all your data at any time using the /delete_data command
+
+Your Rights:
+- Delete your data: Use /delete_data to remove all your information
+
+This bot does not share your data with third parties.
+
+Last updated: February 2025
+    """
+    await update.message.reply_text(privacy_text)
+
 async def help_command(update, context):
     """Send a message when the command /help is issued."""
     help_text = """
     Here's what I can do:
     - Send me any link to save it
     - Use /list to see your saved links
+    - Use /privacy to see our privacy and data retention policy
     - Use /help to see this message
     """
     await update.message.reply_text(help_text)
+
+async def delete_data_command(update, context):
+    """Let users delete all their data"""
+    user_id = update.message.from_user.id
+    
+    # Create a confirmation keyboard
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes, delete my data", callback_data="confirm_delete"),
+            InlineKeyboardButton("No, keep my data", callback_data="cancel_delete")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "⚠️ Are you sure you want to delete all your data?\n\n"
+        "This will remove all your saved links, reminders, and usage statistics. "
+        "This action cannot be undone.",
+        reply_markup=reply_markup
+    )
 
 async def set_timezone(update, context):
     """Handles the initial region selection step."""
@@ -186,6 +236,253 @@ def get_utc_time(local_time, user_timezone_offset):
 
 # Update the import
 from utils.url_extractor import extract_urls
+
+async def handle_delete_confirmation(update, context):
+    """Handle delete data confirmation"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "cancel_delete":
+        await query.edit_message_text(
+            "Operation canceled. Your data has been kept."
+        )
+        return
+    
+    # User confirmed deletion
+    user_id = query.from_user.id
+    db = DatabaseHandler()
+    session = None
+    
+    try:
+        session = db.get_session()
+        
+        # Find the user
+        user = session.query(User).filter_by(telegram_id=user_id).first()
+        if not user:
+            await query.edit_message_text("No data found to delete.")
+            return
+        
+        # Delete links and their reminders (will cascade delete)
+        session.query(Link).filter_by(user_id=user.id).delete()
+        
+        # Keep the user record but reset preferences
+        user.timezone = None
+        user.has_set_timezone = False
+        
+        session.commit()
+        
+        await query.edit_message_text(
+            "✅ All your data has been deleted. Your saved links and reminders "
+            "have been removed from our database."
+        )
+        
+    except Exception as e:
+        logger.error(f"Error deleting user data: {str(e)}")
+        if session:
+            session.rollback()
+        await query.edit_message_text(
+            "Sorry, there was an error deleting your data. Please try again later."
+        )
+    finally:
+        if session:
+            session.close()
+
+async def list_links(update, context):
+    """Command to list saved links with pagination"""
+    # Get page number from context or default to 1
+    page = 1
+    if context.args:
+        try:
+            page_arg = int(context.args[0])
+            if page_arg > 0:
+                page = page_arg
+        except ValueError:
+            pass
+    
+    await show_links_page(update.message, context, page)
+
+async def handle_pagination(update, context):
+    """Handle pagination callbacks for link list"""
+    query = update.callback_query
+    await query.answer()  # Acknowledge the callback
+    
+    # Extract page number from callback data
+    page = 1
+    try:
+        page = int(query.data.split('_')[1])
+    except (IndexError, ValueError):
+        logger.error(f"Invalid pagination callback data: {query.data}")
+    
+    await show_links_page(query, context, page, is_callback=True)
+
+
+async def show_links_page(message_or_query, context, page, is_callback=False):
+    """Show a specific page of links with improved error tracking"""
+    logger.info(f"Starting show_links_page with page={page}, is_callback={is_callback}")
+    
+    try:
+        if is_callback:
+            user_id = message_or_query.from_user.id
+            logger.info(f"Callback query from user_id={user_id}")
+        else:
+            user_id = message_or_query.from_user.id
+            logger.info(f"Direct command from user_id={user_id}")
+        
+        # Set page size
+        page_size = 5
+        
+        db = DatabaseHandler()
+        session = None
+        
+        try:
+            session = db.get_session()
+            logger.info("Database session created successfully")
+            
+            # Get user - with error checking
+            try:
+                user = session.query(User).filter_by(telegram_id=user_id).first()
+                if user:
+                    logger.info(f"Found user with id={user.id}, telegram_id={user.telegram_id}")
+                else:
+                    logger.warning(f"No user found with telegram_id={user_id}")
+                    message_text = (
+                        "You don't have any saved links yet.\n"
+                        "Send me any link to save it for later reading!"
+                    )
+                    
+                    if is_callback:
+                        await message_or_query.edit_message_text(message_text)
+                    else:
+                        await message_or_query.reply_text(message_text)
+                    return
+            except Exception as e:
+                logger.error(f"Error querying user: {str(e)}")
+                raise
+                
+            # Count total links - with error checking
+            try:
+                total_links = session.query(Link).filter_by(user_id=user.id).count()
+                logger.info(f"Found {total_links} total links for user {user.id}")
+            except Exception as e:
+                logger.error(f"Error counting links: {str(e)}")
+                raise
+            
+            if total_links == 0:
+                message_text = (
+                    "You don't have any saved links yet.\n"
+                    "Send me any link to save it for later reading!"
+                )
+                
+                if is_callback:
+                    await message_or_query.edit_message_text(message_text)
+                else:
+                    await message_or_query.reply_text(message_text)
+                return
+                
+            # Calculate total pages
+            total_pages = (total_links + page_size - 1) // page_size
+            
+            # Adjust page if out of bounds
+            if page > total_pages:
+                page = total_pages
+                
+            # Calculate offset for query
+            offset = (page - 1) * page_size
+            
+            # Get links for current page - with error checking
+            try:
+                links = (
+                    session.query(Link)
+                    .filter_by(user_id=user.id)
+                    .order_by(Link.created_at.desc())
+                    .limit(page_size)
+                    .offset(offset)
+                    .all()
+                )
+                logger.info(f"Retrieved {len(links)} links for page {page}")
+                
+                # Debug: print first link details if available
+                if links:
+                    logger.info(f"First link: id={links[0].id}, url={links[0].url}")
+            except Exception as e:
+                logger.error(f"Error querying links: {str(e)}")
+                raise
+            
+            # Format the message - with error checking
+            try:
+                message_parts = [f"📋 *Your Saved Links (Page {page}/{total_pages})*\n"]
+                
+                for i, link in enumerate(links, offset + 1):
+                    # Basic link entry with minimal formatting to avoid errors
+                    link_entry = f"{i}. {link.url}\n\n"
+                    message_parts.append(link_entry)
+                    
+                # Create simple navigation buttons
+                keyboard = []
+                nav_buttons = []
+                
+                if page > 1:
+                    nav_buttons.append(
+                        InlineKeyboardButton("◀️ Previous", callback_data=f"page_{page-1}")
+                    )
+                    
+                if page < total_pages:
+                    nav_buttons.append(
+                        InlineKeyboardButton("Next ▶️", callback_data=f"page_{page+1}")
+                    )
+                    
+                if nav_buttons:
+                    keyboard.append(nav_buttons)
+                    
+                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+                message_text = "\n".join(message_parts)
+                
+                logger.info(f"Message prepared with {len(message_parts)} parts")
+            except Exception as e:
+                logger.error(f"Error formatting message: {str(e)}")
+                raise
+            
+            # Send or edit message based on context
+            try:
+                if is_callback:
+                    await message_or_query.edit_message_text(
+                        message_text,
+                        reply_markup=reply_markup,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                else:
+                    await message_or_query.reply_text(
+                        message_text,
+                        reply_markup=reply_markup,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                logger.info("Message sent successfully")
+            except Exception as e:
+                logger.error(f"Error sending message: {str(e)}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Database operation error: {str(e)}")
+            raise
+        finally:
+            if session:
+                session.close()
+                logger.info("Database session closed")
+                
+    except Exception as e:
+        logger.error(f"Error in show_links_page: {str(e)}")
+        error_message = f"Sorry, I encountered a problem while retrieving your links: {str(e)}"
+        
+        try:
+            if is_callback:
+                await message_or_query.edit_message_text(error_message)
+            else:
+                await message_or_query.reply_text(error_message)
+        except Exception as send_err:
+            logger.error(f"Failed to send error message: {str(send_err)}")
+
 
 async def handle_message(update, context):
     """Handle incoming messages with rate limiting"""
@@ -660,11 +957,20 @@ def main():
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("set_timezone", set_timezone))
+        application.add_handler(CommandHandler("privacy", privacy_command))
+        application.add_handler(CommandHandler("delete_data", delete_data_command))
+        application.add_handler(CommandHandler("list", list_links))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         # Add timezone handlers BEFORE the general reminder handler
         application.add_handler(CallbackQueryHandler(handle_region_selection, pattern="^region_"))
         application.add_handler(CallbackQueryHandler(handle_timezone_selection, pattern="^timezone_"))
+
+        # Add delete confirmation handler
+        application.add_handler(CallbackQueryHandler(handle_delete_confirmation, pattern="^confirm_delete|cancel_delete$"))
+
+        # Add pagination handler
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern="^page_"))
         
         # Add snooze handler
         application.add_handler(CallbackQueryHandler(handle_snooze, pattern="^snooze_"))
