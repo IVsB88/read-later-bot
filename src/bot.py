@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta, time
 
 # Third-party imports
 from telegram.error import NetworkError, TelegramError, TimedOut
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,6 +15,8 @@ from telegram.ext import (
 )
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+import re
 
 # Local imports
 from config.config import Config
@@ -288,45 +291,245 @@ async def handle_delete_confirmation(update, context):
             session.close()
 
 async def list_links(update, context):
-    """Command to list saved links with pagination"""
-    # Get page number from context or default to 1
-    page = 1
-    if context.args:
-        try:
-            page_arg = int(context.args[0])
-            if page_arg > 0:
-                page = page_arg
-        except ValueError:
-            pass
+    """Command to list saved links with inline button pagination"""
+    # Handle both direct commands and callbacks
+    is_callback = hasattr(update, 'callback_query') and update.callback_query
     
-    await show_links_page(update.message, context, page)
-
-async def handle_pagination(update, context):
-    """Handle pagination callbacks for link list"""
-    query = update.callback_query
-    await query.answer()  # Acknowledge the callback
+    if is_callback:
+        query = update.callback_query
+        # Check if query is None before using
+        if query:
+            await query.answer()
+            message = query.message
+            user_id = query.from_user.id
+            
+            # Extract page number from callback data
+            parts = query.data.split('_')
+            page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        else:
+            logger.error("Callback query is None")
+            return
+    else:
+        message = update.message
+        user_id = update.message.from_user.id
+        
+        # Get page from command args
+        page = 1
+        if context.args and context.args[0].isdigit():
+            page = int(context.args[0])
     
-    # Extract page number from callback data
-    page = 1
+    page_size = 5
+    db = DatabaseHandler()
+    session = None
+    
     try:
-        page = int(query.data.split('_')[1])
-    except (IndexError, ValueError):
-        logger.error(f"Invalid pagination callback data: {query.data}")
-    
-    await show_links_page(query, context, page, is_callback=True)
+        session = db.get_session()
+        
+        # Get user
+        user = session.query(User).filter_by(telegram_id=user_id).first()
+        if not user:
+            text = "You don't have any saved links yet."
+            if is_callback:
+                await query.edit_message_text(text)
+            else:
+                await message.reply_text(text)
+            return
+            
+        # Count total links
+        total_links = session.query(Link).filter_by(user_id=user.id).count()
+        
+        if total_links == 0:
+            text = "You don't have any saved links yet."
+            if is_callback:
+                await query.edit_message_text(text)
+            else:
+                await message.reply_text(text)
+            return
+            
+        # Calculate total pages
+        total_pages = (total_links + page_size - 1) // page_size
+        
+        # Adjust page if out of bounds
+        if page > total_pages:
+            page = total_pages
+        if page < 1:
+            page = 1
+            
+        # Calculate offset
+        offset = (page - 1) * page_size
+        
+        # Get links for current page
+        links = (
+            session.query(Link)
+            .filter_by(user_id=user.id)
+            .order_by(Link.created_at.desc())
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        )
+        
+        # Format the message
+        message_text = f"📋 Your Saved Links (Page {page}/{total_pages})\n\n"
+        
+        for i, link in enumerate(links, offset + 1):
+            message_text += f"{i}. {link.url}\n\n"
+        
+        # Create inline keyboard for navigation
+        keyboard = []
+        nav_buttons = []
+        
+        if page > 1:
+            nav_buttons.append(
+                InlineKeyboardButton("◀️ Previous", callback_data=f"list_{page-1}")
+            )
+            
+        if page < total_pages:
+            nav_buttons.append(
+                InlineKeyboardButton("Next ▶️", callback_data=f"list_{page+1}")
+            )
+            
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+            
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        # Send or edit message
+        if is_callback:
+            await query.edit_message_text(
+                message_text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True
+            )
+        else:
+            await message.reply_text(
+                message_text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in list_links: {str(e)}")
+        error_message = "Sorry, I encountered a problem while retrieving your links."
+        
+        if is_callback:
+            try:
+                await query.edit_message_text(error_message)
+            except Exception as edit_err:
+                logger.error(f"Failed to edit message: {edit_err}")
+        else:
+            await message.reply_text(error_message)
+    finally:
+        if session:
+            session.close()
+
+async def handle_list_pagination(update, context):
+    """Handle pagination callbacks for the list command"""
+    try:
+        query = update.callback_query
+        await query.answer()  # Acknowledge the callback
+        
+        # Extract page number from callback data
+        parts = query.data.split('_')
+        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        
+        user_id = query.from_user.id
+        db = DatabaseHandler()
+        session = None
+        
+        try:
+            session = db.get_session()
+            
+            # Get user
+            user = session.query(User).filter_by(telegram_id=user_id).first()
+            if not user:
+                await query.edit_message_text("You don't have any saved links yet.")
+                return
+                
+            # Count total links
+            total_links = session.query(Link).filter_by(user_id=user.id).count()
+            
+            if total_links == 0:
+                await query.edit_message_text("You don't have any saved links yet.")
+                return
+                
+            # Calculate total pages
+            page_size = 5
+            total_pages = (total_links + page_size - 1) // page_size
+            
+            # Adjust page if out of bounds
+            if page > total_pages:
+                page = total_pages
+            if page < 1:
+                page = 1
+                
+            # Calculate offset
+            offset = (page - 1) * page_size
+            
+            # Get links for current page
+            links = (
+                session.query(Link)
+                .filter_by(user_id=user.id)
+                .order_by(Link.created_at.desc())
+                .limit(page_size)
+                .offset(offset)
+                .all()
+            )
+            
+            # Format the message
+            message_text = f"📋 Your Saved Links (Page {page}/{total_pages})\n\n"
+            
+            for i, link in enumerate(links, offset + 1):
+                message_text += f"{i}. {link.url}\n\n"
+            
+            # Create inline keyboard for navigation
+            keyboard = []
+            nav_buttons = []
+            
+            if page > 1:
+                nav_buttons.append(
+                    InlineKeyboardButton("◀️ Previous", callback_data=f"list_{page-1}")
+                )
+                
+            if page < total_pages:
+                nav_buttons.append(
+                    InlineKeyboardButton("Next ▶️", callback_data=f"list_{page+1}")
+                )
+                
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+                
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+            
+            # Edit message
+            await query.edit_message_text(
+                message_text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True
+            )
+                
+        except Exception as e:
+            logger.error(f"Error in pagination: {str(e)}")
+            await query.edit_message_text(
+                "Sorry, I encountered a problem while retrieving your links."
+            )
+        finally:
+            if session:
+                session.close()
+                
+    except Exception as e:
+        logger.error(f"Error handling pagination callback: {str(e)}")
+
 
 
 async def show_links_page(message_or_query, context, page, is_callback=False):
-    """Show a specific page of links with improved error tracking"""
+    """Show a specific page of links with no formatting to ensure compatibility"""
     logger.info(f"Starting show_links_page with page={page}, is_callback={is_callback}")
     
     try:
         if is_callback:
             user_id = message_or_query.from_user.id
-            logger.info(f"Callback query from user_id={user_id}")
         else:
             user_id = message_or_query.from_user.id
-            logger.info(f"Direct command from user_id={user_id}")
         
         # Set page size
         page_size = 5
@@ -336,36 +539,23 @@ async def show_links_page(message_or_query, context, page, is_callback=False):
         
         try:
             session = db.get_session()
-            logger.info("Database session created successfully")
             
-            # Get user - with error checking
-            try:
-                user = session.query(User).filter_by(telegram_id=user_id).first()
-                if user:
-                    logger.info(f"Found user with id={user.id}, telegram_id={user.telegram_id}")
-                else:
-                    logger.warning(f"No user found with telegram_id={user_id}")
-                    message_text = (
-                        "You don't have any saved links yet.\n"
-                        "Send me any link to save it for later reading!"
-                    )
-                    
-                    if is_callback:
-                        await message_or_query.edit_message_text(message_text)
-                    else:
-                        await message_or_query.reply_text(message_text)
-                    return
-            except Exception as e:
-                logger.error(f"Error querying user: {str(e)}")
-                raise
+            # Get user
+            user = session.query(User).filter_by(telegram_id=user_id).first()
+            if not user:
+                message_text = (
+                    "You don't have any saved links yet.\n"
+                    "Send me any link to save it for later reading!"
+                )
                 
-            # Count total links - with error checking
-            try:
-                total_links = session.query(Link).filter_by(user_id=user.id).count()
-                logger.info(f"Found {total_links} total links for user {user.id}")
-            except Exception as e:
-                logger.error(f"Error counting links: {str(e)}")
-                raise
+                if is_callback:
+                    await message_or_query.edit_message_text(message_text)
+                else:
+                    await message_or_query.reply_text(message_text)
+                return
+                
+            # Count total links
+            total_links = session.query(Link).filter_by(user_id=user.id).count()
             
             if total_links == 0:
                 message_text = (
@@ -389,79 +579,92 @@ async def show_links_page(message_or_query, context, page, is_callback=False):
             # Calculate offset for query
             offset = (page - 1) * page_size
             
-            # Get links for current page - with error checking
-            try:
-                links = (
-                    session.query(Link)
-                    .filter_by(user_id=user.id)
-                    .order_by(Link.created_at.desc())
-                    .limit(page_size)
-                    .offset(offset)
-                    .all()
-                )
-                logger.info(f"Retrieved {len(links)} links for page {page}")
-                
-                # Debug: print first link details if available
-                if links:
-                    logger.info(f"First link: id={links[0].id}, url={links[0].url}")
-            except Exception as e:
-                logger.error(f"Error querying links: {str(e)}")
-                raise
+            # Get links for current page
+            links = (
+                session.query(Link)
+                .filter_by(user_id=user.id)
+                .order_by(Link.created_at.desc())
+                .limit(page_size)
+                .offset(offset)
+                .all()
+            )
             
-            # Format the message - with error checking
-            try:
-                message_parts = [f"📋 *Your Saved Links (Page {page}/{total_pages})*\n"]
+            # Format the message with NO special formatting
+            header = f"📋 Your Saved Links (Page {page}/{total_pages})\n\n"
+            message_parts = [header]
+            
+            for i, link in enumerate(links, offset + 1):
+                # Format creation date
+                created_date = link.created_at.strftime("%b %d, %Y")
                 
-                for i, link in enumerate(links, offset + 1):
-                    # Basic link entry with minimal formatting to avoid errors
-                    link_entry = f"{i}. {link.url}\n\n"
-                    message_parts.append(link_entry)
-                    
-                # Create simple navigation buttons
-                keyboard = []
-                nav_buttons = []
+                # Determine read status emoji
+                status_emoji = "✅" if link.is_read else "📖"
                 
-                if page > 1:
-                    nav_buttons.append(
-                        InlineKeyboardButton("◀️ Previous", callback_data=f"page_{page-1}")
+                # Get active reminder if any
+                active_reminder = (
+                    session.query(Reminder)
+                    .filter_by(link_id=link.id, status='pending')
+                    .first()
+                )
+                
+                reminder_info = ""
+                if active_reminder:
+                    # Format reminder time in user's timezone
+                    local_time = get_user_local_time(
+                        active_reminder.remind_at, 
+                        user.timezone
                     )
-                    
-                if page < total_pages:
-                    nav_buttons.append(
-                        InlineKeyboardButton("Next ▶️", callback_data=f"page_{page+1}")
-                    )
-                    
-                if nav_buttons:
-                    keyboard.append(nav_buttons)
-                    
-                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-                message_text = "\n".join(message_parts)
+                    reminder_date = local_time.strftime("%b %d at %I:%M %p")
+                    reminder_info = f"⏰ Reminder: {reminder_date}\n"
                 
-                logger.info(f"Message prepared with {len(message_parts)} parts")
-            except Exception as e:
-                logger.error(f"Error formatting message: {str(e)}")
-                raise
+                # Format link entry - with NO special characters
+                link_text = link.title if link.title else link.url
+                # Limit text length
+                if len(link_text) > 40:
+                    link_text = link_text[:37] + "..."
+                
+                link_entry = (
+                    f"{i}. {status_emoji} {link_text}\n"
+                    f"🔗 {link.url}\n"
+                    f"📅 Saved: {created_date}\n"
+                    f"{reminder_info}\n"
+                )
+                
+                message_parts.append(link_entry)
+            
+            # Create navigation buttons
+            keyboard = []
+            nav_buttons = []
+            
+            if page > 1:
+                nav_buttons.append(
+                    InlineKeyboardButton("◀️ Previous", callback_data=f"page_{page-1}")
+                )
+                
+            if page < total_pages:
+                nav_buttons.append(
+                    InlineKeyboardButton("Next ▶️", callback_data=f"page_{page+1}")
+                )
+                
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+                
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+            message_text = "\n".join(message_parts)
             
             # Send or edit message based on context
-            try:
-                if is_callback:
-                    await message_or_query.edit_message_text(
-                        message_text,
-                        reply_markup=reply_markup,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
-                    )
-                else:
-                    await message_or_query.reply_text(
-                        message_text,
-                        reply_markup=reply_markup,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
-                    )
-                logger.info("Message sent successfully")
-            except Exception as e:
-                logger.error(f"Error sending message: {str(e)}")
-                raise
+            if is_callback:
+                await message_or_query.edit_message_text(
+                    message_text,
+                    reply_markup=reply_markup,
+                    disable_web_page_preview=True
+                )
+            else:
+                await message_or_query.reply_text(
+                    message_text,
+                    reply_markup=reply_markup,
+                    disable_web_page_preview=True
+                )
                 
         except Exception as e:
             logger.error(f"Database operation error: {str(e)}")
@@ -469,11 +672,10 @@ async def show_links_page(message_or_query, context, page, is_callback=False):
         finally:
             if session:
                 session.close()
-                logger.info("Database session closed")
                 
     except Exception as e:
         logger.error(f"Error in show_links_page: {str(e)}")
-        error_message = f"Sorry, I encountered a problem while retrieving your links: {str(e)}"
+        error_message = "Sorry, I encountered a problem while retrieving your links. Please try again later."
         
         try:
             if is_callback:
@@ -483,6 +685,40 @@ async def show_links_page(message_or_query, context, page, is_callback=False):
         except Exception as send_err:
             logger.error(f"Failed to send error message: {str(send_err)}")
 
+async def list_links_minimal(update, context):
+    """Ultra-minimal implementation of list links"""
+    user_id = update.message.from_user.id
+    
+    try:
+        # Just send a simple message first to check basic functionality
+        await update.message.reply_text("Checking your saved links...")
+        
+        # Try to access the database
+        db = DatabaseHandler()
+        with db.session_scope() as session:
+            # Get user
+            user = session.query(User).filter_by(telegram_id=user_id).first()
+            if not user:
+                await update.message.reply_text("You don't have any saved links yet.")
+                return
+                
+            # Count links only
+            link_count = session.query(Link).filter_by(user_id=user.id).count()
+            
+            # Send minimal response
+            await update.message.reply_text(
+                f"You have {link_count} saved links.\n\n"
+                "Use /list 1 to see the first page."
+            )
+            
+    except Exception as e:
+        # Log the full exception details
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Error in list_links_minimal: {error_details}")
+        
+        # Send a generic error message
+        await update.message.reply_text("Sorry, I encountered a technical problem.")
 
 async def handle_message(update, context):
     """Handle incoming messages with rate limiting"""
@@ -960,6 +1196,7 @@ def main():
         application.add_handler(CommandHandler("privacy", privacy_command))
         application.add_handler(CommandHandler("delete_data", delete_data_command))
         application.add_handler(CommandHandler("list", list_links))
+        application.add_handler(CommandHandler("listmin", list_links_minimal))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         # Add timezone handlers BEFORE the general reminder handler
@@ -970,7 +1207,7 @@ def main():
         application.add_handler(CallbackQueryHandler(handle_delete_confirmation, pattern="^confirm_delete|cancel_delete$"))
 
         # Add pagination handler
-        application.add_handler(CallbackQueryHandler(handle_pagination, pattern="^page_"))
+        application.add_handler(CallbackQueryHandler(handle_list_pagination, pattern="^list_"))
         
         # Add snooze handler
         application.add_handler(CallbackQueryHandler(handle_snooze, pattern="^snooze_"))
