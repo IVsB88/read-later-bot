@@ -80,6 +80,16 @@ class Config:
             raise ValueError("DATABASE_URL is required")
         if not self.BOT_USERNAME:
             raise ValueError("BOT_USERNAME is required")
+
+        # Admin bot settings
+        self.ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN')
+        self.ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID')
+        
+        # Validate admin bot settings
+        if not self.ADMIN_BOT_TOKEN:
+            raise ValueError("ADMIN_BOT_TOKEN is required")
+        if not self.ADMIN_CHAT_ID:
+            raise ValueError("ADMIN_CHAT_ID is required")
             
     def _load_optional_settings(self):
         """Load optional settings with defaults"""
