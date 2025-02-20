@@ -265,8 +265,10 @@ async def handle_delete_confirmation(update, context):
             await query.edit_message_text("No data found to delete.")
             return
         
-        # Delete links and their reminders (will cascade delete)
-        session.query(Link).filter_by(user_id=user.id).delete()
+        # FIXED: Get links and delete each one through the ORM to trigger cascades
+        links = session.query(Link).filter_by(user_id=user.id).all()
+        for link in links:
+            session.delete(link)  # This triggers the cascade delete of reminders
         
         # Keep the user record but reset preferences
         user.timezone = None
