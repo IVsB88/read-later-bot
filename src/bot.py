@@ -26,11 +26,9 @@ from models_dir.models import Link, Reminder, User, UserAnalytics
 from utils.url_extractor import extract_urls
 from utils.logging_config import setup_logging
 from utils.rate_limiter import RateLimiter
-from utils.admin_notifier import AdminNotifier
 
 config = Config.get_instance()
 rate_limiter = RateLimiter()
-admin_notifier = AdminNotifier(config.ADMIN_BOT_TOKEN, config.ADMIN_CHAT_ID)
 # Set up logging - this is now our only logging configuration
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -59,14 +57,9 @@ async def start(update, context):
         session = db.get_session()
         user = session.query(User).filter_by(telegram_id=user_id).first()
         if not user:
-            # This is a new user
             user = User(telegram_id=user_id)
             session.add(user)
             session.commit()
-
-            # Send admin notification for new user
-            username = update.effective_user.username or "No username"
-            await admin_notifier.notify_new_user(username, user_id)
 
         if not user.timezone:
             await update.message.reply_text(
@@ -843,12 +836,6 @@ async def save_link_logic(update, context, urls):
                 db.update_user_analytics(user.id, 'default_passive', session=session)
 
                 saved_count += 1
-
-                # Get total links count for this user
-                total_links = session.query(Link).filter_by(user_id=user.id).count()
-                
-                # Send admin notification
-                await admin_notifier.notify_saved_link(username, total_links)
                 
                 # Create reminder setting keyboard
                 keyboard = [
