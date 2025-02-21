@@ -27,11 +27,13 @@ from utils.url_extractor import extract_urls
 from utils.logging_config import setup_logging
 from utils.rate_limiter import RateLimiter
 
+
 config = Config.get_instance()
 rate_limiter = RateLimiter()
 # Set up logging - this is now our only logging configuration
 setup_logging()
 logger = logging.getLogger(__name__)
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -60,6 +62,8 @@ async def start(update, context):
             user = User(telegram_id=user_id)
             session.add(user)
             session.commit()
+            # Log new user
+            logger.info(f"[USER_ACTIVITY] New user joined: @{update.effective_user.username or user_id}")
 
         if not user.timezone:
             await update.message.reply_text(
@@ -836,6 +840,10 @@ async def save_link_logic(update, context, urls):
                 db.update_user_analytics(user.id, 'default_passive', session=session)
 
                 saved_count += 1
+                
+                # Log link save with total count
+                total_links = session.query(Link).filter_by(user_id=user.id).count()
+                logger.info(f"[USER_ACTIVITY] User @{username or user_id} saved link. Total links: {total_links}")
                 
                 # Create reminder setting keyboard
                 keyboard = [

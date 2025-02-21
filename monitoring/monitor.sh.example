@@ -28,3 +28,15 @@ if [ "$FREE_MEM" -lt 100 ]; then
         -d "chat_id=${ADMIN_CHAT_ID}" \
         -d "text=⚠️ Low memory: ${FREE_MEM}MB free"
 fi
+
+# Check for new user activity
+NEW_ACTIVITY=$(grep "\[USER_ACTIVITY\]" /var/log/tg-readlater-bot/bot.log | tail -n 10)
+if [ ! -z "$NEW_ACTIVITY" ]; then
+    # Format message for Telegram
+    MESSAGE="🤖 Bot Activity Update:
+${NEW_ACTIVITY}"
+    
+    curl -s "https://api.telegram.org/bot${ADMIN_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${ADMIN_CHAT_ID}" \
+        -d "text=${MESSAGE}"
+fi
