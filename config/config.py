@@ -93,6 +93,9 @@ class Config:
         self.HASH_SALT = os.getenv('HASH_SALT')
         self.ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
         
+        # API Keys
+        self.GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+        
         # Rate limiting
         self.RATE_LIMIT_MESSAGES = int(os.getenv('RATE_LIMIT_MESSAGES', '10'))
         self.RATE_LIMIT_LINKS = int(os.getenv('RATE_LIMIT_LINKS', '5'))

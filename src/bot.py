@@ -1,5 +1,7 @@
+#!/usr/bin/env python
 # Standard library imports
 import logging
+import re
 from datetime import datetime, timezone, timedelta, time
 
 # Third-party imports
@@ -16,8 +18,6 @@ from telegram.ext import (
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-import re
-
 # Local imports
 from config.config import Config
 from config.timezones_config import REGION_TIMEZONES
@@ -26,13 +26,25 @@ from models_dir.models import Link, Reminder, User, UserAnalytics
 from utils.url_extractor import extract_urls
 from utils.logging_config import setup_logging
 from utils.rate_limiter import RateLimiter
+from utils.content_summarizer import ContentSummarizer
 
-
+# Initialize configuration, logging and components
 config = Config.get_instance()
-rate_limiter = RateLimiter()
-# Set up logging - this is now our only logging configuration
 setup_logging()
 logger = logging.getLogger(__name__)
+rate_limiter = RateLimiter()
+
+# Initialize content summarizer if Gemini API key is available
+content_summarizer = None
+try:
+    gemini_api_key = config.GEMINI_API_KEY
+    if gemini_api_key:
+        content_summarizer = ContentSummarizer(api_key=gemini_api_key)
+        logger.info("Content summarizer initialized successfully")
+    else:
+        logger.warning("Gemini API key not found, summarization feature will be disabled")
+except Exception as e:
+    logger.error(f"Failed to initialize content summarizer: {str(e)}")
 
 
 @retry(
@@ -119,6 +131,7 @@ async def help_command(update, context):
     Here's what I can do:
     - Send me any link to save it
     - Use /list to see your saved links
+    - Use /summarize to get a summary of a webpage
     - Use /privacy to see our privacy and data retention policy
     - Use /help to see this message
     """
@@ -1152,6 +1165,92 @@ async def handle_snooze(update: Update, context: CallbackContext):
             reply_markup=None
         )
 
+async def summarize_command(update, context):
+    """
+    Command handler for the /summarize command.
+    User can either send a URL with the command or reply to a message containing a URL.
+    """
+    user_id = update.message.from_user.id
+
+    # Check if content_summarizer is available
+    if not content_summarizer:
+        await update.message.reply_text(
+            "Sorry, the summarization feature is not available. Please contact the administrator."
+        )
+        return
+
+    # Check rate limit
+    is_allowed, error_msg = rate_limiter.check_rate_limit(user_id, "messages")
+    if not is_allowed:
+        await update.message.reply_text(error_msg)
+        return
+
+    # First, check if this is a reply to a message
+    message_text = ""
+    if update.message.reply_to_message and update.message.reply_to_message.text:
+        message_text = update.message.reply_to_message.text
+    # Otherwise, check if there is text after the command
+    elif context.args:
+        message_text = " ".join(context.args)
+    
+    if not message_text:
+        await update.message.reply_text(
+            "Please provide a URL to summarize, or reply to a message containing a URL with /summarize."
+        )
+        return
+
+    # Extract URL from the message
+    valid_urls, error_messages = extract_urls(message_text)
+    
+    if not valid_urls:
+        await update.message.reply_text(
+            "No valid URLs found. Please provide a valid URL to summarize."
+        )
+        return
+    
+    # Take the first valid URL
+    url = valid_urls[0]
+    
+    # Send initial response
+    progress_message = await update.message.reply_text(
+        "🔍 Fetching content and generating summary...\n"
+        "This may take a few moments."
+    )
+    
+    try:
+        # Process summarization
+        success, title, content = await content_summarizer.summarize_url(url)
+        
+        if not success:
+            await progress_message.edit_text(
+                f"❌ Error: {content}\n\n"
+                "Please try again with a different URL."
+            )
+            return
+        
+        # Create formatted response
+        response = f"📝 *Summary of: {title}*\n\n{content}"
+        
+        # Telegram has a message length limit, so truncate if necessary
+        if len(response) > 4000:
+            response = response[:3997] + "..."
+        
+        # Update the progress message with the summary
+        await progress_message.edit_text(
+            response,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+        
+        # Log success
+        logger.info(f"Successfully summarized URL for user {user_id}: {url}")
+        
+    except Exception as e:
+        logger.error(f"Error summarizing URL: {str(e)}")
+        await progress_message.edit_text(
+            "Sorry, I encountered an error while generating the summary. Please try again later."
+        )
+
 # This function will log any exceptions that occur while the bot processes updates.
 async def error_handler(update, context):
     """Log errors and notify the user if possible."""
@@ -1204,6 +1303,7 @@ def main():
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("set_timezone", set_timezone))
         application.add_handler(CommandHandler("privacy", privacy_command))
+        application.add_handler(CommandHandler("summarize", summarize_command))
         application.add_handler(CommandHandler("delete_data", delete_data_command))
         application.add_handler(CommandHandler("list", list_links))
         application.add_handler(CommandHandler("listmin", list_links_minimal))
@@ -1245,4 +1345,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
